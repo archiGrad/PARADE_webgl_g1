@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<title>sort shader example</title>
+
+<link rel="icon" type="image/x-icon" href="/favicon.ico">
+
+
+<!-- JavaScript files -->
+<script type="text/javascript" src="three.min.js"></script>
+<script type="text/javascript" src="stats.min.js"></script>
+<script type="text/javascript" src="dat.gui.min.js"></script>
+
+<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
+<script type="text/javascript" src="capture_and_qr.js"></script>
+
+<script src="capture_and_upload.js"></script>
+
+
+
+</head>
+
+<body>
+	<!-- Navigation bar -->
+	<header class="nav-container">
+		<h1 class="nav-header">
+			<a href="/index.html" class="nav-item is-header-item">WebGL-shaders</a>
+		</h1>
+
+		<nav class="nav-menu-wrapper">
+			<span class="nav-item is-menu-item menu-icon" onclick="return false;"></span>
+
+			<ul class="nav-menu-list">
+				<li><a href="/index.html" class="nav-item">Back to list</a></li>
+				<li><a href="/js/shader-example-evolveImage.js" class="nav-item">JavaScript file</a></li>
+				<li><a href="/shaders/vert-filters.glsl" class="nav-item">Vertex shader</a></li>
+				<li><a href="/shaders/frag-sort.glsl" class="nav-item">Fragment shader</a></li>
+			</ul>
+
+			<ul class="nav-menu-list">
+				<li><a href="/about.html" class="nav-item">About</a></li>
+				<li><a href="https://github.com/jagracar/webgl-shader-examples" class="nav-item"><span class="github-icon"></span>
+						Github</a></li>
+			</ul>
+		</nav>
+	</header>
+
+	<!-- Main content -->
+	<main class="main-container">
+	<article class="content">
+		<div class="sketch-container" id="sketch-container">
+			<div class="sketch-gui" id="sketch-gui"></div>
+			<div class="sketch-stats" id="sketch-stats"></div>
+
+
+
+		</div>
+
+		<div id="qr-container"></div>
+
+
+		<script type="x-shader/x-vertex" id="vertexShader">
+
+
+
+
+
+
+
+
+
+
+
+
+
+#define GLSLIFY 1
+// Texture varyings
+varying vec2 v_uv;
+
+/*
+ * The main program
+ */
+void main() {
+    // Calculate the varyings
+    v_uv = uv;
+
+    // Vertex shader output
+    gl_Position = vec4(position, 1.0);
+}
+
+		</script>
+
+		<script type="x-shader/x-fragment" id="fragmentShader">
+
+
+
+
+
+
+
+
+
+
+
+
+#define GLSLIFY 1
+// Texture varyings
+varying vec2 v_uv;
+
+// Common uniforms
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform sampler2D u_texture;
+
+// Random function
+float random(vec2 st) {
+    return fract(sin(dot(st.xy, vec2(12.9898, 78.233))) * 43758.5453123);
+}
+
+// Generate a pseudo-random chunk position and size
+vec4 generateRandomChunk(float seed, bool isChaoticChunk) {
+    // Seed-based randomness for consistent chunk generation
+    vec2 randomSeed = vec2(seed, seed * 1.3);
+    
+    if (isChaoticChunk) {
+        // Bottom right chunk with chaotic movement
+        float chunkX = u_resolution.x * 0.7;  // Start from 70% of width
+        float chunkY = 0.0;  // Start from bottom
+        
+        float chunkWidth = u_resolution.x * 0.9;  // 30% of width
+        float chunkHeight = u_resolution.y * 0.9;  // 30% of height
+        
+        return vec4(chunkX, chunkY, chunkWidth, chunkHeight);
+    } else {
+        // Original chunk generation
+        // Random chunk position (x, y)
+        float chunkX = random(randomSeed) * (u_resolution.x - 200.0);
+        float chunkY = random(randomSeed + vec2(0.5, 0.5)) * (u_resolution.y - 200.0);
+        
+        // Random chunk size (width, height) between 20-120 pixels
+        float chunkWidth = 20.0 + random(randomSeed + vec2(1.0, 1.0)) * 100.0;
+        float chunkHeight = 50.0 + random(randomSeed + vec2(2.0, 2.0)) * 100.0;
+        
+        return vec4(chunkX, chunkY, chunkWidth, chunkHeight);
+    }
+}
+
+// Check if current pixel is inside a chunk
+bool isInChunk(vec2 pixelPos, vec4 chunk) {
+    return pixelPos.x >= chunk.x && 
+           pixelPos.x < chunk.x + chunk.z &&
+           pixelPos.y >= chunk.y && 
+           pixelPos.y < chunk.y + chunk.w;
+}
+
+void main() {
+    // Convert UV to pixel coordinates
+    vec2 pixelPos = v_uv * u_resolution;
+    
+    // Calculate chunks more frequently
+    float chunkSeed = floor(u_time / 0.01);
+    vec4 movingChunk = generateRandomChunk(chunkSeed, false);
+    vec4 chaoticChunk = generateRandomChunk(chunkSeed, true);
+    
+    // Calculate movement offsets
+    float movingChunkOffset = mod(u_time - floor(u_time / 1.0) * 10.0, 10.0) * 10.0;
+    
+    // Create a continuous stream effect
+    float continuousOffset = - 17.0;
+ 
+    // Fetch original pixel color
+    vec3 pixelColor = texture2D(u_texture, v_uv).rgb;
+    
+    // Check for moving chunk
+    if (isInChunk(pixelPos, movingChunk)) {
+        vec2 adjustedUV = v_uv;
+        adjustedUV.y += movingChunkOffset / u_resolution.y;
+        pixelColor = texture2D(u_texture, adjustedUV).rgb;
+    }
+    
+    // Check for chaotic chunk
+    if (isInChunk(pixelPos, chaoticChunk)) {
+        // Create a continuous stream from right to left
+        vec2 streamUV = v_uv;
+        streamUV.x = fract(streamUV.x + continuousOffset / u_resolution.x);
+        
+        pixelColor = texture2D(u_texture, streamUV).rgb;
+    }
+    
+    // Output final pixel color
+    gl_FragColor = vec4(pixelColor, 1.0);
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+		</script>
+
+		<script type="text/javascript" src="shader-example-evolveImage.js"></script>
+	</article>
+	</main>
+</body>
+</html>

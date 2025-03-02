@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Screen Space Displacement - Three.js</title>
+    <style>
+        body { 
+            margin: 0; 
+            overflow: hidden; 
+            background-color: #000;
+        }
+        canvas { 
+            display: block; 
+        }
+    </style>
+</head>
+<body>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+        // Scene setup for the ping-pong buffer technique
+        const scene = new THREE.Scene();
+        const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+        
+        // Setup renderer with drawing buffer preservation
+        const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setClearColor(0x111111);
+        renderer.autoClearColor = false;
+        document.body.appendChild(renderer.domElement);
+        
+        // Create a full-screen quad
+        const geometry = new THREE.PlaneGeometry(2, 2);
+        
+        // Create a noise texture for displacement
+        const createNoiseTexture = () => {
+            const size = 256;
+            const data = new Uint8Array(size * size * 4);
+            
+            for (let i = 0; i < size * size * 4; i += 4) {
+                const x = (i / 4) % size;
+                const y = Math.floor((i / 4) / size);
+                
+                const noise = (Math.sin(x * 0.1) + Math.sin(y * 0.1) + 
+                              Math.sin((x + y) * 0.05) + 
+                              Math.sin(Math.sqrt(x * x + y * y) * 0.1)) * 0.25 + 0.5;
+                
+                data[i] = data[i + 1] = data[i + 2] = noise * 255;
+                data[i + 3] = 255;
+            }
+            
+            const texture = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
+            texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+            texture.needsUpdate = true;
+            return texture;
+        };
+        
+        // Create the displacement map texture
+        const displacementMap = createNoiseTexture();
+        
+        // Fragment shader for screen-space displacement
+        const fragmentShader = `
+            uniform sampler2D displacementMap;
+            uniform sampler2D screenTexture;
+            uniform float time;
+            uniform vec2 resolution;
+            uniform float displacementStrength;
+            uniform float feedback;
+            
+            void main() {
+                vec2 uv = gl_FragCoord.xy / resolution;
+                
+                // Sample displacement map with animated coordinates
+                vec2 displacementUV = uv;
+                displacementUV.x += time * 0.01;
+                displacementUV.y += sin(time * 0.05) * 0.02;
+                
+                vec4 displacement = texture2D(displacementMap, displacementUV);
+                
+                // Calculate displacement vector
+                vec2 displacementVector = vec2(
+                    displacement.r * 2.0 - 1.0,
+                    displacement.g * 2.0 - 1.0
+                ) * displacementStrength;
+                
+                // Apply displacement to screen coordinates
+                vec2 distortedUV = uv + displacementVector;
+                
+                // Sample the screen with displaced coordinates
+                vec4 screenColor = texture2D(screenTexture, distortedUV);
+                
+                // Add some color variation based on displacement and time
+                vec3 colorTint = vec3(
+                    0.5 + 0.5 * sin(time * 0.1 + displacement.r * 3.0),
+                    0.5 + 0.5 * sin(time * 0.15 + displacement.g * 3.0 + 2.0),
+                    0.5 + 0.5 * sin(time * 0.2 + displacement.b * 3.0 + 4.0)
+                );
+                
+                // Blend with the existing screen using feedback parameter
+                vec3 finalColor = mix(screenColor.rgb, colorTint, 0.05);
+                
+                // Apply the feedback effect (trail)
+                gl_FragColor = vec4(finalColor * feedback, 1.0);
+            }
+        `;
+        
+        // Simple vertex shader that just passes through coordinates
+        const vertexShader = `
+            void main() {
+                gl_Position = vec4(position, 1.0);
+            }
+        `;
+        
+        // Create ping-pong render targets for the feedback effect
+        let renderTargets = [
+            new THREE.WebGLRenderTarget(
+                window.innerWidth, 
+                window.innerHeight, 
+                {
+                    minFilter: THREE.LinearFilter,
+                    magFilter: THREE.LinearFilter,
+                    format: THREE.RGBAFormat
+                }
+            ),
+            new THREE.WebGLRenderTarget(
+                window.innerWidth, 
+                window.innerHeight, 
+                {
+                    minFilter: THREE.LinearFilter,
+                    magFilter: THREE.LinearFilter,
+                    format: THREE.RGBAFormat
+                }
+            )
+        ];
+        
+        // Create a second scene for rendering to the screen
+        const screenScene = new THREE.Scene();
+        
+        // Create the material for screen-space displacement
+        const material = new THREE.ShaderMaterial({
+            uniforms: {
+                displacementMap: { value: displacementMap },
+                screenTexture: { value: null },
+                time: { value: 0.0 },
+                resolution: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) },
+                displacementStrength: { value: 0.03 },
+                feedback: { value: 0.97 } // Controls the trailing effect
+            },
+            vertexShader: vertexShader,
+            fragmentShader: fragmentShader
+        });
+        
+        // Create the mesh and add it to both scenes
+        const quad = new THREE.Mesh(geometry, material);
+        scene.add(quad);
+        
+        // Create a simple material to render the result to the screen
+        const screenMaterial = new THREE.MeshBasicMaterial();
+        const screenQuad = new THREE.Mesh(geometry, screenMaterial);
+        screenScene.add(screenQuad);
+        
+        // Target index for ping-pong rendering
+        let currentTargetIndex = 0;
+        
+        // Initial render to the first render target
+        renderer.setRenderTarget(renderTargets[0]);
+        renderer.setClearColor(0x000000);
+        renderer.clear();
+        
+        // Animation loop
+        const animate = () => {
+            requestAnimationFrame(animate);
+            
+            // Update the time uniform
+            material.uniforms.time.value += 0.02;
+            
+            // Get the source and destination targets for this frame
+            const srcTarget = renderTargets[currentTargetIndex];
+            const dstTarget = renderTargets[1 - currentTargetIndex];
+            
+            // Set the source texture from the previous frame
+            material.uniforms.screenTexture.value = srcTarget.texture;
+            
+            // Render the displacement effect to the destination target
+            renderer.setRenderTarget(dstTarget);
+            renderer.render(scene, camera);
+            
+            // Render the result to the screen
+            screenMaterial.map = dstTarget.texture;
+            renderer.setRenderTarget(null);
+            renderer.render(screenScene, camera);
+            
+            // Swap targets for the next frame
+            currentTargetIndex = 1 - currentTargetIndex;
+        };
+        
+        // Handle window resize
+        window.addEventListener('resize', () => {
+            const width = window.innerWidth;
+            const height = window.innerHeight;
+            
+            renderer.setSize(width, height);
+            
+            // Resize both render targets
+            renderTargets.forEach(target => {
+                target.setSize(width, height);
+            });
+            
+            // Update resolution uniform
+            material.uniforms.resolution.value.set(width, height);
+        });
+        
+        // Start the animation
+        animate();
+    </script>
+</body>
+</html>

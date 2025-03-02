@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Pixel Sorting Shader with Planes</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #111; }
+        canvas { display: block; }
+    </style>
+    <!-- Only load Three.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r126/three.min.js"></script>
+</head>
+<body>
+    <script>
+        // OrbitControls implementation inline
+        // This is the Three.js OrbitControls code directly embedded to avoid loading issues
+        (function() {
+            // OrbitControls implementation
+            THREE.OrbitControls = function(object, domElement) {
+                this.object = object;
+                this.domElement = (domElement !== undefined) ? domElement : document;
+                
+                // API
+                this.enabled = true;
+                this.target = new THREE.Vector3();
+                this.enableDamping = false;
+                this.dampingFactor = 0.25;
+                this.enableZoom = true;
+                this.zoomSpeed = 1.0;
+                this.enableRotate = true;
+                this.rotateSpeed = 1.0;
+                this.enablePan = true;
+                this.panSpeed = 1.0;
+                this.screenSpacePanning = false;
+                this.keyPanSpeed = 7.0;
+                this.autoRotate = false;
+                this.autoRotateSpeed = 2.0;
+                this.enableKeys = true;
+                this.keys = { LEFT: 37, UP: 38, RIGHT: 39, BOTTOM: 40 };
+                this.mouseButtons = { LEFT: THREE.MOUSE.LEFT, MIDDLE: THREE.MOUSE.MIDDLE, RIGHT: THREE.MOUSE.RIGHT };
+                this.touches = { ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN };
+                
+                // Internal variables
+                this.changeEvent = { type: 'change' };
+                this.startEvent = { type: 'start' };
+                this.endEvent = { type: 'end' };
+                
+                const scope = this;
+                const STATE = { NONE: -1, ROTATE: 0, DOLLY: 1, PAN: 2, TOUCH_ROTATE: 3, TOUCH_DOLLY_PAN: 4 };
+                let state = STATE.NONE;
+                
+                const EPS = 0.000001;
+                const spherical = new THREE.Spherical();
+                const sphericalDelta = new THREE.Spherical();
+                
+                let scale = 1;
+                const panOffset = new THREE.Vector3();
+                let zoomChanged = false;
+                
+                const rotateStart = new THREE.Vector2();
+                const rotateEnd = new THREE.Vector2();
+                const rotateDelta = new THREE.Vector2();
+                
+                const panStart = new THREE.Vector2();
+                const panEnd = new THREE.Vector2();
+                const panDelta = new THREE.Vector2();
+                
+                const dollyStart = new THREE.Vector2();
+                const dollyEnd = new THREE.Vector2();
+                const dollyDelta = new THREE.Vector2();
+                
+                function getAutoRotationAngle() {
+                    return 2 * Math.PI / 60 / 60 * scope.autoRotateSpeed;
+                }
+                
+                function getZoomScale() {
+                    return Math.pow(0.95, scope.zoomSpeed);
+                }
+                
+                this.update = function() {
+                    const offset = new THREE.Vector3();
+                    const quat = new THREE.Quaternion().setFromUnitVectors(object.up, new THREE.Vector3(0, 1, 0));
+                    const quatInverse = quat.clone().invert();
+                    
+                    // Position of object in normalized device space
+                    const position = scope.object.position;
+                    
+                    offset.copy(position).sub(scope.target);
+                    offset.applyQuaternion(quat);
+                    
+                    // Angle from Z-axis around Y-axis
+                    spherical.setFromVector3(offset);
+                    
+                    if (scope.autoRotate && state === STATE.NONE) {
+                        spherical.theta += getAutoRotationAngle();
+                    }
+                    
+                    spherical.theta += sphericalDelta.theta;
+                    spherical.phi += sphericalDelta.phi;
+                    
+                    // Restrict phi to be between desired limits
+                    spherical.phi = Math.max(0.01, Math.min(Math.PI - 0.01, spherical.phi));
+                    spherical.makeSafe();
+                    spherical.radius *= scale;
+                    
+                    // Restrict radius to be between desired limits
+                    spherical.radius = Math.max(0.1, Math.min(2000, spherical.radius));
+                    
+                    // Move target to panned location
+                    scope.target.add(panOffset);
+                    
+                    offset.setFromSpherical(spherical);
+                    offset.applyQuaternion(quatInverse);
+                    
+                    position.copy(scope.target).add(offset);
+                    scope.object.lookAt(scope.target);
+                    
+                    if (scope.enableDamping) {
+                        sphericalDelta.theta *= (1 - scope.dampingFactor);
+                        sphericalDelta.phi *= (1 - scope.dampingFactor);
+                        panOffset.multiplyScalar(1 - scope.dampingFactor);
+                    } else {
+                        sphericalDelta.set(0, 0, 0);
+                        panOffset.set(0, 0, 0);
+                    }
+                    
+                    scale = 1;
+                    
+                    return false;
+                };
+                
+                // Event handlers
+                function onMouseDown(event) {
+                    if (!scope.enabled) return;
+                    
+                    event.preventDefault();
+                    
+                    switch (event.button) {
+                        case scope.mouseButtons.LEFT:
+                            rotateStart.set(event.clientX, event.clientY);
+                            state = STATE.ROTATE;
+                            break;
+                        case scope.mouseButtons.MIDDLE:
+                            dollyStart.set(event.clientX, event.clientY);
+                            state = STATE.DOLLY;
+                            break;
+                        case scope.mouseButtons.RIGHT:
+                            panStart.set(event.clientX, event.clientY);
+                            state = STATE.PAN;
+                            break;
+                    }
+                    
+                    document.addEventListener('mousemove', onMouseMove, false);
+                    document.addEventListener('mouseup', onMouseUp, false);
+                }
+                
+                function onMouseMove(event) {
+                    if (!scope.enabled) return;
+                    
+                    event.preventDefault();
+                    
+                    switch (state) {
+                        case STATE.ROTATE:
+                            rotateEnd.set(event.clientX, event.clientY);
+                            rotateDelta.subVectors(rotateEnd, rotateStart);
+                            
+                            // Rotating across whole screen goes 360 degrees around
+                            const element = scope.domElement;
+                            sphericalDelta.theta -= 2 * Math.PI * rotateDelta.x / element.clientWidth * scope.rotateSpeed;
+                            sphericalDelta.phi -= 2 * Math.PI * rotateDelta.y / element.clientHeight * scope.rotateSpeed;
+                            
+                            rotateStart.copy(rotateEnd);
+                            scope.update();
+                            break;
+                        case STATE.DOLLY:
+                            dollyEnd.set(event.clientX, event.clientY);
+                            dollyDelta.subVectors(dollyEnd, dollyStart);
+                            
+                            if (dollyDelta.y > 0) {
+                                scale /= getZoomScale();
+                            } else if (dollyDelta.y < 0) {
+                                scale *= getZoomScale();
+                            }
+                            
+                            dollyStart.copy(dollyEnd);
+                            scope.update();
+                            break;
+                        case STATE.PAN:
+                            panEnd.set(event.clientX, event.clientY);
+                            panDelta.subVectors(panEnd, panStart);
+                            
+                            pan(panDelta.x, panDelta.y);
+                            
+                            panStart.copy(panEnd);
+                            scope.update();
+                            break;
+                    }
+                }
+                
+                function onMouseUp() {
+                    document.removeEventListener('mousemove', onMouseMove, false);
+                    document.removeEventListener('mouseup', onMouseUp, false);
+                    
+                    state = STATE.NONE;
+                }
+                
+                function onMouseWheel(event) {
+                    if (!scope.enabled || !scope.enableZoom) return;
+                    
+                    event.preventDefault();
+                    
+                    if (event.deltaY < 0) {
+                        scale *= getZoomScale();
+                    } else if (event.deltaY > 0) {
+                        scale /= getZoomScale();
+                    }
+                    
+                    scope.update();
+                }
+                
+                function pan(deltaX, deltaY) {
+                    const element = scope.domElement;
+                    
+                    const offset = new THREE.Vector3();
+                    const position = scope.object.position;
+                    offset.copy(position).sub(scope.target);
+                    const targetDistance = offset.length();
+                    
+                    // Half of the fov is center to top of screen
+                    targetDistance *= Math.tan((scope.object.fov / 2) * Math.PI / 180.0);
+                    
+                    // We actually don't use screenWidth, since perspective camera is fixed to screen height
+                    const distance = 2 * deltaX * targetDistance / element.clientHeight;
+                    const distance2 = 2 * deltaY * targetDistance / element.clientHeight;
+                    
+                    if (scope.screenSpacePanning) {
+                        panOffset.x -= distance * scope.object.matrix.elements[0];
+                        panOffset.y -= distance2 * scope.object.matrix.elements[5];
+                        panOffset.z -= distance * scope.object.matrix.elements[8];
+                    } else {
+                        // Calculate pan offset in world space
+                        const v = new THREE.Vector3();
+                        v.setFromMatrixColumn(scope.object.matrix, 0);
+                        v.multiplyScalar(-distance);
+                        
+                        const v2 = new THREE.Vector3();
+                        v2.crossVectors(scope.object.up, v);
+                        v2.multiplyScalar(distance2);
+                        
+                        panOffset.add(v);
+                        panOffset.add(v2);
+                    }
+                }
+                
+                // Event listeners
+                scope.domElement.addEventListener('contextmenu', function(event) { event.preventDefault(); }, false);
+                scope.domElement.addEventListener('mousedown', onMouseDown, false);
+                scope.domElement.addEventListener('wheel', onMouseWheel, false);
+            };
+        })();
+
+        // Initialize Three.js scene
+        const scene = new THREE.Scene();
+        
+        // Create orthographic camera for isometric view
+        const aspect = window.innerWidth / window.innerHeight;
+        const frustumSize = 15;
+        const camera = new THREE.OrthographicCamera(
+            frustumSize * aspect / -2,
+            frustumSize * aspect / 2,
+            frustumSize / 2,
+            frustumSize / -2,
+            0.1,
+            1000
+        );
+        
+        // Position camera for isometric view
+        camera.position.set(10, 10, 10);
+        camera.lookAt(0, 0, 0);
+        
+        // Setup renderer with drawing buffer preservation
+        const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setClearColor(0x111111);
+        renderer.autoClearColor = false;
+        document.body.appendChild(renderer.domElement);
+        
+        // Setup OrbitControls - now using our inline version
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.25;
+        controls.screenSpacePanning = true;
+
+        // Create pingpong buffer system for feedback effect
+        const pingpongRenderTargets = [
+            new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight),
+            new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight)
+        ];
+        let currentRenderTarget = 0;
+
+        // Create and load textures
+        const textureLoader = new THREE.TextureLoader();
+        const textureFiles = [
+            'imagen1.png',
+            'imagen2.png',
+            'imagen3.png',
+            'imagen4.png',
+            'imagen5.png'
+        ];
+        
+        const textures = textureFiles.map(file => textureLoader.load(file));
+
+        // Create shader material with pixel sorting effect
+        const createMaterial = (texture) => {
+            return new THREE.ShaderMaterial({
+                uniforms: {
+                    iChannel0: { value: texture },         // Original texture
+                    iChannel1: { value: null },            // Previous frame
+                    iResolution: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) },
+                    iFrame: { value: 0 },                  // Frame counter
+                    THRESHOLD: { value: 0.5 }              // Sorting threshold
+                },
+                vertexShader: `
+                    varying vec2 vUv;
+                    
+                    void main() {
+                        vUv = uv;
+                        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                    }
+                `,
+                fragmentShader: `
+                    uniform sampler2D iChannel0;
+                    uniform sampler2D iChannel1;
+                    uniform vec2 iResolution;
+                    uniform int iFrame;
+                    uniform float THRESHOLD;
+                    varying vec2 vUv;
+                    
+                    // grayscale average of the colors
+                    float gscale(vec3 c) { 
+                        return (c.r + c.g + c.b) / 3.0; 
+                    }
+                    
+                    void main() {
+                        // uvs
+                        vec2 uv = vUv;
+                        
+                        if (iFrame < 10) {
+                            gl_FragColor = texture2D(iChannel0, uv);
+                            return;
+                        }
+                        
+                        // the frame number parity, -1 is odd 1 is even
+                        float fParity = mod(float(iFrame), 2.0) * 2.0 - 1.0;
+                        
+                        // we differentiate every 1/2 pixel on the horizontal axis, will be -1 or 1
+                        float vp = mod(floor(uv.x * iResolution.x), 2.0) * 2.0 - 1.0;
+                        
+                        vec2 dir = vec2(1.0, 0.0);
+                        dir *= fParity * vp;
+                        dir /= iResolution.xy;
+                        
+                        // we sort
+                        vec4 curr = texture2D(iChannel1, uv);
+                        vec4 comp = texture2D(iChannel1, uv + dir);
+                        
+                        float gCurr = gscale(curr.rgb);
+                        float gComp = gscale(comp.rgb);
+                        
+                        // we prevent the sort from happening on the borders
+                        if (uv.x + dir.x < 0.0 || uv.x + dir.x > 1.0) {
+                            gl_FragColor = curr;
+                            return;
+                        }
+                        
+                        // the direction of the displacement defines the order of the comparison
+                        if (dir.x < 0.0) {
+                            if (gCurr > THRESHOLD && gComp > gCurr) {
+                                gl_FragColor = comp;
+                            } else {
+                                gl_FragColor = curr;
+                            }
+                        } else {
+                            if (gComp > THRESHOLD && gCurr >= gComp) {
+                                gl_FragColor = comp;
+                            } else {
+                                gl_FragColor = curr;
+                            }
+                        }
+                    }
+                `,
+                transparent: true,
+                side: THREE.DoubleSide
+            });
+        };
+
+        // Cardinal directions
+        const directions = [
+            new THREE.Vector3(1, 0, 0),   // Right
+            new THREE.Vector3(-1, 0, 0),  // Left
+            new THREE.Vector3(0, 1, 0),   // Up
+            new THREE.Vector3(0, 0, 1)    // Forward (in isometric view this appears as diagonal)
+        ];
+
+        // Create 5 planes
+        const planes = [];
+        const planeSize = 2;
+        
+        for (let i = 0; i < 5; i++) {
+            const geometry = new THREE.PlaneGeometry(planeSize, planeSize);
+            
+            // Choose a random texture for each plane
+            const randomTextureIndex = Math.floor(Math.random() * textures.length);
+            const material = createMaterial(textures[randomTextureIndex]);
+            
+            const plane = new THREE.Mesh(geometry, material);
+            
+            // Set initial position - spread them out a bit
+            plane.position.set(
+                (Math.random() * 10) - 5,
+                (Math.random() * 10) - 5,
+                (Math.random() * 10) - 5
+            );
+            
+            // Choose a random cardinal direction
+            const randomDirIndex = Math.floor(Math.random() * directions.length);
+            plane.userData.direction = directions[randomDirIndex].clone().multiplyScalar(0.05);
+            
+            // Set time for next direction change (between 1-3 seconds)
+            plane.userData.nextDirectionChange = Math.random() * 2 + 1;
+            
+            // Random boundary for each plane (how far it can go)
+            plane.userData.bounds = 8;
+            
+            scene.add(plane);
+            planes.push(plane);
+        }
+
+        // Add some light
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambientLight);
+        
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        directionalLight.position.copy(camera.position);
+        scene.add(directionalLight);
+
+        // Handle window resize
+        window.addEventListener('resize', () => {
+            const width = window.innerWidth;
+            const height = window.innerHeight;
+            const aspect = width / height;
+            
+            camera.left = frustumSize * aspect / -2;
+            camera.right = frustumSize * aspect / 2;
+            camera.top = frustumSize / 2;
+            camera.bottom = frustumSize / -2;
+            camera.updateProjectionMatrix();
+            
+            renderer.setSize(width, height);
+            pingpongRenderTargets[0].setSize(width, height);
+            pingpongRenderTargets[1].setSize(width, height);
+            
+            // Update resolution uniform for all planes
+            const newResolution = new THREE.Vector2(width, height);
+            planes.forEach(plane => {
+                plane.material.uniforms.iResolution.value = newResolution;
+            });
+        });
+
+        // Animation variables
+        let frameCount = 0;
+        const clock = new THREE.Clock();
+
+        // Animation function
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            frameCount++;
+            const delta = clock.getDelta();
+            
+            // Get previous frame texture
+            const prevTexture = pingpongRenderTargets[currentRenderTarget].texture;
+            
+            // Update all planes with the previous frame
+            planes.forEach(plane => {
+                plane.material.uniforms.iChannel1.value = prevTexture;
+                plane.material.uniforms.iFrame.value = frameCount;
+            });
+            
+            // Swap render targets
+            currentRenderTarget = (currentRenderTarget + 1) % 2;
+            const currentRT = pingpongRenderTargets[currentRenderTarget];
+            
+            // Render to the current render target
+            renderer.setRenderTarget(currentRT);
+            renderer.render(scene, camera);
+            
+            // Update controls
+            controls.update();
+            
+            // Then render to the screen
+            renderer.setRenderTarget(null);
+            renderer.render(scene, camera);
+            
+            // Update all planes
+            planes.forEach(plane => {
+                // Movement and direction updates only (shader uniforms already updated above)
+                
+                // Move the plane
+                plane.position.add(plane.userData.direction);
+                
+                // Check bounds and reverse direction if needed
+                ['x', 'y', 'z'].forEach(axis => {
+                    if (Math.abs(plane.position[axis]) > plane.userData.bounds) {
+                        // Choose a new random direction instead of just reversing
+                        const randomDirIndex = Math.floor(Math.random() * directions.length);
+                        plane.userData.direction.copy(directions[randomDirIndex]).multiplyScalar(0.05);
+                    }
+                });
+                
+                // Decrease time until next direction change
+                plane.userData.nextDirectionChange -= delta;
+                
+                // Change direction randomly
+                if (plane.userData.nextDirectionChange <= 0) {
+                    // Choose a new random direction
+                    const randomDirIndex = Math.floor(Math.random() * directions.length);
+                    plane.userData.direction.copy(directions[randomDirIndex]).multiplyScalar(0.05);
+                    
+                    // Reset timer (between 1-3 seconds)
+                    plane.userData.nextDirectionChange = Math.random() * 2 + 1;
+                }
+            });
+        }
+        
+        // Start animation
+        animate();
+    </script>
+</body>
+</html>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
